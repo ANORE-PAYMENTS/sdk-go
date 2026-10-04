@@ -1,3 +1,3 @@
-module github.com/roditsya/sdk-go
+module github.com/anore-payments/sdk-go
 
 go 1.18

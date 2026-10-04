@@ -5,11 +5,11 @@
 ## Установка
 
 ```bash
-go get github.com/roditsya/sdk-go
+go get github.com/anore-payments/sdk-go
 ```
 
 ```go
-import anore "github.com/roditsya/sdk-go"
+import anore "github.com/anore-payments/sdk-go"
 ```
 
 ## Быстрый старт
@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"log"
 
-	anore "github.com/roditsya/sdk-go"
+	anore "github.com/anore-payments/sdk-go"
 )
 
 func main() {
