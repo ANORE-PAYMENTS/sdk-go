@@ -48,6 +48,15 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Println(s.Status, s.Paid) // paid true
+
+	page, _ := c.ListPayments(anore.ListPaymentsParams{ShopID: 1, Status: "paid", Limit: 20})
+	balance, _ := c.GetBalance(1)
+	fmt.Println(page.Total, balance.Available)
+
+	payout, _ := c.CreatePayout(anore.CreatePayoutParams{
+		Amount: 5000, Method: "usdt_ton", Address: "UQ...", ShopID: 1, ExternalID: "payout_42",
+	})
+	fmt.Println(payout.ID, payout.Status)
 }
 ```
 
@@ -55,6 +64,8 @@ func main() {
 
 При оплате anore шлёт `POST` на ваш URL с заголовком `Anore-Signature`.
 Проверяйте подпись по **сырому** телу запроса (не декодированному JSON):
+
+Тот же обработчик принимает `payout.created`, `payout.processing`, `payout.succeeded`, `payout.failed` и `payout.updated` (ручная корректировка статуса, см. `statusRevision`); используйте `ev.IsPayout()`.
 
 ```go
 func webhookHandler(w http.ResponseWriter, r *http.Request) {
@@ -100,6 +111,12 @@ if err != nil {
 | `anore.New(apiKey, ...Option)` | клиент; опции `WithSecret`, `WithBaseURL`, `WithMaxRetries`, `WithHTTPClient` |
 | `CreatePayment(CreatePaymentParams)` | создать счёт → `*Payment` |
 | `GetPayment(id)` | статус → `*Payment` (`.Status`, `.Paid`) |
+| `ListPayments(ListPaymentsParams)` | страница платежей → `*PaymentList` |
+| `GetBalance(shopID)` | баланс → `*Balance` |
+| `GetPayoutFees(shopID)` | комиссии → `*PayoutFees` |
+| `GetPayoutRates(shopID)` | курсы → `*PayoutRates` |
+| `CreatePayout(CreatePayoutParams)` | заявка → `*Payout` |
+| `GetPayout(id)` | статус выплаты → `*Payout` |
 | `VerifyWebhook(rawBody, signature, secret)` | проверка подписи → `bool` |
 | `ParseWebhook(rawBody, signature, secret)` | проверка + разбор → `*WebhookEvent` (возвращает `*SignatureError`) |
 
