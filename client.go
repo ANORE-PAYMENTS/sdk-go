@@ -17,7 +17,9 @@ import (
 
 const DefaultBaseURL = "https://api.anore.cc/api/v1"
 
-const userAgent = "anore-go/1.2.0"
+const Version = "1.3.0"
+
+const userAgent = "anore-go/" + Version
 
 type Client struct {
 	apiKey     string
@@ -81,17 +83,19 @@ func normalizeBaseURL(baseURL string) (string, error) {
 }
 
 type CreatePaymentParams struct {
-	Amount      float64
-	Description string
-	OrderID     string
-	ShopID      int64
-	Currency    string
-	Methods     []string
-	GetbackURL  string
-	SuccessURL  string
-	FailURL     string
-	CallbackURL string
-	Email       string
+	Amount       float64
+	Description  string
+	OrderID      string
+	ShopID       int64
+	Currency     string
+	Methods      []string
+	GetbackURL   string
+	SuccessURL   string
+	FailURL      string
+	CallbackURL  string
+	Email        string
+	UserIdentity *UserIdentity
+	Franchise    *Franchise
 }
 
 func (c *Client) CreatePayment(p CreatePaymentParams) (*Payment, error) {
@@ -128,6 +132,18 @@ func (c *Client) CreatePayment(p CreatePaymentParams) (*Payment, error) {
 	}
 	if p.Email != "" {
 		body["email"] = p.Email
+	}
+	if p.UserIdentity != nil {
+		if err := validateUserIdentity(p.UserIdentity); err != nil {
+			return nil, err
+		}
+		body["user_identity"] = p.UserIdentity
+	}
+	if p.Franchise != nil {
+		if err := validateFranchise(p.Franchise); err != nil {
+			return nil, err
+		}
+		body["franchise"] = p.Franchise
 	}
 	var out Payment
 	if err := c.request("POST", "/payments", body, &out); err != nil {
@@ -182,6 +198,68 @@ func (c *Client) ListPayments(p ListPaymentsParams) (*PaymentList, error) {
 	return &out, nil
 }
 
+func (c *Client) GetSubscriptionCatalog() (*SubscriptionCatalog, error) {
+	var out SubscriptionCatalog
+	if err := c.request("GET", "/subscriptions/catalog", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type CreateSubscriptionParams struct {
+	PlanID         string
+	CustomerID     string
+	CustomerEmail  string
+	IdempotencyKey string
+	ShopID         int64
+}
+
+func (c *Client) CreateSubscription(p CreateSubscriptionParams) (*SubscriptionBinding, error) {
+	if strings.TrimSpace(p.PlanID) == "" || strings.TrimSpace(p.CustomerID) == "" || strings.TrimSpace(p.CustomerEmail) == "" {
+		return nil, fmt.Errorf("anore: subscription plan, customer and email are required")
+	}
+	if err := validateIdempotencyKey(p.IdempotencyKey); err != nil {
+		return nil, err
+	}
+	body := map[string]interface{}{
+		"planId": p.PlanID, "customerId": p.CustomerID, "customerEmail": p.CustomerEmail,
+	}
+	if p.ShopID != 0 {
+		body["shopId"] = p.ShopID
+	}
+	var out SubscriptionBinding
+	if err := c.requestWithHeaders("POST", "/subscriptions", body, http.Header{"Idempotency-Key": []string{p.IdempotencyKey}}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ChargeSubscription(subscriptionID int64, idempotencyKey string) (*SubscriptionCharge, error) {
+	if subscriptionID <= 0 {
+		return nil, fmt.Errorf("anore: subscription ID must be positive")
+	}
+	if err := validateIdempotencyKey(idempotencyKey); err != nil {
+		return nil, err
+	}
+	var out SubscriptionCharge
+	path := fmt.Sprintf("/subscriptions/%d/charges", subscriptionID)
+	if err := c.requestWithHeaders("POST", path, nil, http.Header{"Idempotency-Key": []string{idempotencyKey}}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetSubscription(subscriptionID int64) (*SubscriptionStatus, error) {
+	if subscriptionID <= 0 {
+		return nil, fmt.Errorf("anore: subscription ID must be positive")
+	}
+	var out SubscriptionStatus
+	if err := c.request("GET", fmt.Sprintf("/subscriptions/%d", subscriptionID), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) GetBalance(shopID int64) (*Balance, error) {
 	var out Balance
 	if err := c.request("GET", shopPath("/balance", shopID), nil, &out); err != nil {
@@ -201,6 +279,33 @@ func (c *Client) GetPayoutFees(shopID int64) (*PayoutFees, error) {
 func (c *Client) GetPayoutRates(shopID int64) (*PayoutRates, error) {
 	var out PayoutRates
 	if err := c.request("GET", shopPath("/payouts/rates", shopID), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type ListPayoutsParams struct {
+	ShopID int64
+	Limit  int
+	Cursor string
+}
+
+func (c *Client) ListPayouts(p ListPayoutsParams) (*PayoutList, error) {
+	if p.Limit == 0 {
+		p.Limit = 50
+	}
+	if p.Limit < 1 || p.Limit > 100 {
+		return nil, fmt.Errorf("anore: payout list limit must be between 1 and 100")
+	}
+	query := url.Values{"limit": []string{fmt.Sprint(p.Limit)}}
+	if p.ShopID != 0 {
+		query.Set("shopId", fmt.Sprint(p.ShopID))
+	}
+	if p.Cursor != "" {
+		query.Set("cursor", p.Cursor)
+	}
+	var out PayoutList
+	if err := c.request("GET", "/payouts?"+query.Encode(), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -255,6 +360,83 @@ func (c *Client) GetPayout(id string) (*Payout, error) {
 	return &out, nil
 }
 
+func validateIdempotencyKey(value string) error {
+	if strings.TrimSpace(value) == "" || len(value) > 128 {
+		return fmt.Errorf("anore: idempotency key must contain 1 to 128 characters")
+	}
+	return nil
+}
+
+func validateUserIdentity(identity *UserIdentity) error {
+	switch identity.Type {
+	case UserIdentityTelegramID:
+		if !canonicalTelegramID(identity.Value) {
+			return fmt.Errorf("anore: Telegram ID must be a positive signed-64 decimal string")
+		}
+	case UserIdentityEmail, UserIdentityUsername, UserIdentityExternalID:
+		if strings.TrimSpace(identity.Value) == "" || len(identity.Value) > 190 {
+			return fmt.Errorf("anore: identity value must contain 1 to 190 characters")
+		}
+		if identity.TelegramUsername != "" {
+			return fmt.Errorf("anore: Telegram username is allowed only with telegram_id")
+		}
+	default:
+		return fmt.Errorf("anore: unsupported identity type")
+	}
+	if identity.TelegramUsername != "" && !validTelegramUsername(identity.TelegramUsername) {
+		return fmt.Errorf("anore: invalid Telegram username")
+	}
+	return nil
+}
+
+func validateFranchise(franchise *Franchise) error {
+	if !canonicalTelegramID(franchise.OwnerTelegramID) {
+		return fmt.Errorf("anore: franchise owner Telegram ID must be a positive signed-64 decimal string")
+	}
+	if franchise.OwnerTelegramUsername != "" && !validTelegramUsername(franchise.OwnerTelegramUsername) {
+		return fmt.Errorf("anore: invalid franchise owner Telegram username")
+	}
+	switch franchise.Type {
+	case FranchiseTelegramBot:
+		if !validTelegramUsername(franchise.Address) {
+			return fmt.Errorf("anore: franchise bot address must be a Telegram username")
+		}
+	case FranchiseWebsite:
+		origin, err := url.Parse(franchise.Address)
+		if err != nil || origin.Scheme != "https" || origin.Host == "" || origin.User != nil || origin.Port() != "" || origin.RawQuery != "" || origin.Fragment != "" || (origin.Path != "" && origin.Path != "/") {
+			return fmt.Errorf("anore: franchise website must be a canonical HTTPS origin")
+		}
+	default:
+		return fmt.Errorf("anore: unsupported franchise type")
+	}
+	return nil
+}
+
+func canonicalTelegramID(value string) bool {
+	if value == "" || value[0] == '0' || len(value) > 19 {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return len(value) < 19 || value <= "9223372036854775807"
+}
+
+func validTelegramUsername(value string) bool {
+	value = strings.TrimPrefix(value, "@")
+	if len(value) < 5 || len(value) > 32 {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= 'A' && character <= 'Z') && !(character >= 'a' && character <= 'z') && !(character >= '0' && character <= '9') && character != '_' {
+			return false
+		}
+	}
+	return true
+}
+
 func shopPath(path string, shopID int64) string {
 	if shopID == 0 {
 		return path
@@ -263,6 +445,10 @@ func shopPath(path string, shopID int64) string {
 }
 
 func (c *Client) request(method, path string, body interface{}, out interface{}) error {
+	return c.requestWithHeaders(method, path, body, nil, out)
+}
+
+func (c *Client) requestWithHeaders(method, path string, body interface{}, headers http.Header, out interface{}) error {
 	var payload []byte
 	if body != nil {
 		var err error
@@ -290,6 +476,11 @@ func (c *Client) request(method, path string, body interface{}, out interface{})
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 		req.Header.Set("User-Agent", userAgent)
 		req.Header.Set("Accept", "application/json")
+		for name, values := range headers {
+			for _, value := range values {
+				req.Header.Add(name, value)
+			}
+		}
 		if payload != nil {
 			req.Header.Set("Content-Type", "application/json")
 			if c.secret != "" {
@@ -340,7 +531,7 @@ func (c *Client) request(method, path string, body interface{}, out interface{})
 		}
 
 		msg := errorMessage(data)
-		return apiErrorForStatus(resp.StatusCode, msg, resp.Header.Get("X-Request-Id"))
+		return apiErrorForStatus(resp.StatusCode, msg, resp.Header.Get("X-Request-Id"), data)
 	}
 
 	if lastErr != nil {

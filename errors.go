@@ -1,12 +1,16 @@
 package anore
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 type APIError struct {
 	Status    int
 	Kind      string
 	Message   string
 	RequestID string
+	Data      map[string]interface{}
 }
 
 func (e *APIError) Error() string {
@@ -22,7 +26,7 @@ func (e *APIError) IsForbidden() bool      { return e.Kind == "forbidden" }
 func (e *APIError) IsNotFound() bool       { return e.Kind == "not_found" }
 func (e *APIError) IsServer() bool         { return e.Kind == "server" }
 
-func apiErrorForStatus(status int, message, requestID string) *APIError {
+func apiErrorForStatus(status int, message, requestID string, data []byte) *APIError {
 	kind := "api"
 	switch {
 	case status == 400:
@@ -36,7 +40,9 @@ func apiErrorForStatus(status int, message, requestID string) *APIError {
 	case status >= 500:
 		kind = "server"
 	}
-	return &APIError{Status: status, Kind: kind, Message: message, RequestID: requestID}
+	var details map[string]interface{}
+	_ = json.Unmarshal(data, &details)
+	return &APIError{Status: status, Kind: kind, Message: message, RequestID: requestID, Data: details}
 }
 
 type ConnectionError struct{ Err error }
