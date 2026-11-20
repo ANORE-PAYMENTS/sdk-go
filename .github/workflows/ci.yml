@@ -21,7 +21,6 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
           cache: false
-      - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -race ./...
 

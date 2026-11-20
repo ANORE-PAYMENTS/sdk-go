@@ -361,7 +361,7 @@ func (c *Client) GetPayout(id string) (*Payout, error) {
 }
 
 func validateIdempotencyKey(value string) error {
-	if len(value) < 1 || len(value) > 128 {
+	if strings.TrimSpace(value) == "" || len(value) > 128 {
 		return fmt.Errorf("anore: idempotency key must contain 1 to 128 characters")
 	}
 	return nil

@@ -136,6 +136,18 @@ func TestPaymentContextValidationBeforeNetwork(t *testing.T) {
 	}
 }
 
+func TestInvalidSubscriptionIdempotencyKey(t *testing.T) {
+	client, _ := New("key", WithHTTPClient(&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		t.Error("invalid idempotency key reached transport")
+		return nil, errors.New("unexpected request")
+	})}))
+	for _, key := range []string{"", "   ", strings.Repeat("x", 129)} {
+		if _, err := client.CreateSubscription(CreateSubscriptionParams{PlanID: "plan", CustomerID: "customer", CustomerEmail: "buyer@example.com", IdempotencyKey: key}); err == nil {
+			t.Errorf("accepted idempotency key %q", key)
+		}
+	}
+}
+
 func TestSubscriptionReconcilingDetails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
