@@ -34,6 +34,123 @@ func independentSignature(raw []byte, secret string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+func TestPaymentContextAndSubscriptionContract(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		raw, _ := io.ReadAll(r.Body)
+		switch r.URL.Path {
+		case "/api/v1/payments":
+			if r.Header.Get("X-ZPay-Signature") != independentSignature(raw, "api-secret") {
+				t.Error("payment context signature mismatch")
+			}
+			var body map[string]interface{}
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Fatal(err)
+			}
+			wantIdentity := map[string]interface{}{"type": "telegram_id", "value": "123456789", "telegram_username": "@customer_name"}
+			wantFranchise := map[string]interface{}{"type": "telegram_bot", "address": "@branch_bot", "owner_telegram_id": "987654321", "owner_telegram_username": "branch_owner"}
+			if !reflect.DeepEqual(body["user_identity"], wantIdentity) || !reflect.DeepEqual(body["franchise"], wantFranchise) {
+				t.Fatalf("unexpected payment context %#v", body)
+			}
+			io.WriteString(w, `{"success":true,"id":"payment-1","status":"new"}`)
+		case "/api/v1/subscriptions/catalog":
+			io.WriteString(w, `{"shopIdRequired":true,"environment":"live","shops":[]}`)
+		case "/api/v1/subscriptions":
+			if r.Header.Get("Idempotency-Key") != "binding-key" {
+				t.Error("binding idempotency key missing")
+			}
+			io.WriteString(w, `{"subscriptionId":42,"shopId":7,"status":"binding_pending","qrUrl":"https://qr.nspk.ru/x","environment":"live"}`)
+		case "/api/v1/subscriptions/42/charges":
+			if r.Header.Get("Idempotency-Key") != "charge-key" || len(raw) != 0 {
+				t.Errorf("unexpected charge request headers=%v body=%q", r.Header, raw)
+			}
+			io.WriteString(w, `{"subscriptionId":42,"chargeId":"charge-1","status":"creating"}`)
+		case "/api/v1/subscriptions/42":
+			io.WriteString(w, `{"subscriptionId":42,"shopId":7,"planId":"plan","status":"active","customerId":"customer","customerEmail":"buyer@example.com","amount":10,"environment":"live"}`)
+		case "/api/v1/payouts":
+			if r.URL.Query().Get("shopId") != "7" || r.URL.Query().Get("limit") != "25" || r.URL.Query().Get("cursor") != "opaque" {
+				t.Errorf("unexpected payout cursor query %v", r.URL.Query())
+			}
+			io.WriteString(w, `{"shopId":7,"limit":25,"items":[{"id":"WD-1"}],"hasMore":true,"nextCursor":"next"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := testClient(t, server, WithSecret("api-secret"))
+	_, err := client.CreatePayment(CreatePaymentParams{
+		Amount: 10, Description: "branch order",
+		UserIdentity: &UserIdentity{Type: UserIdentityTelegramID, Value: "123456789", TelegramUsername: "@customer_name"},
+		Franchise:    &Franchise{Type: FranchiseTelegramBot, Address: "@branch_bot", OwnerTelegramID: "987654321", OwnerTelegramUsername: "branch_owner"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if catalog, err := client.GetSubscriptionCatalog(); err != nil || !catalog.ShopIDRequired {
+		t.Fatalf("catalog=%#v err=%v", catalog, err)
+	}
+	if binding, err := client.CreateSubscription(CreateSubscriptionParams{PlanID: "plan", CustomerID: "customer", CustomerEmail: "buyer@example.com", IdempotencyKey: "binding-key", ShopID: 7}); err != nil || binding.SubscriptionID != 42 {
+		t.Fatalf("binding=%#v err=%v", binding, err)
+	}
+	if charge, err := client.ChargeSubscription(42, "charge-key"); err != nil || charge.ChargeID != "charge-1" {
+		t.Fatalf("charge=%#v err=%v", charge, err)
+	}
+	if subscription, err := client.GetSubscription(42); err != nil || subscription.Status != "active" {
+		t.Fatalf("subscription=%#v err=%v", subscription, err)
+	}
+	if payouts, err := client.ListPayouts(ListPayoutsParams{ShopID: 7, Limit: 25, Cursor: "opaque"}); err != nil || len(payouts.Items) != 1 || payouts.NextCursor != "next" {
+		t.Fatalf("payouts=%#v err=%v", payouts, err)
+	}
+	if calls != 6 {
+		t.Fatalf("calls=%d", calls)
+	}
+}
+
+func TestPaymentContextValidationBeforeNetwork(t *testing.T) {
+	client, _ := New("key", WithHTTPClient(&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		t.Error("invalid context reached transport")
+		return nil, errors.New("unexpected request")
+	})}))
+	invalidIdentities := []*UserIdentity{
+		{Type: "phone", Value: "1"},
+		{Type: UserIdentityTelegramID, Value: "01"},
+		{Type: UserIdentityEmail, Value: "buyer@example.com", TelegramUsername: "buyer_name"},
+	}
+	for _, identity := range invalidIdentities {
+		if _, err := client.CreatePayment(CreatePaymentParams{Amount: 10, Description: "test", UserIdentity: identity}); err == nil {
+			t.Errorf("accepted identity %#v", identity)
+		}
+	}
+	invalidFranchises := []*Franchise{
+		{Type: "store", Address: "branch", OwnerTelegramID: "1"},
+		{Type: FranchiseWebsite, Address: "http://branch.example", OwnerTelegramID: "1"},
+		{Type: FranchiseTelegramBot, Address: "bot", OwnerTelegramID: "1"},
+		{Type: FranchiseWebsite, Address: "https://branch.example/path", OwnerTelegramID: "1"},
+		{Type: FranchiseWebsite, Address: "https://branch.example", OwnerTelegramID: "0"},
+	}
+	for _, franchise := range invalidFranchises {
+		if _, err := client.CreatePayment(CreatePaymentParams{Amount: 10, Description: "test", Franchise: franchise}); err == nil {
+			t.Errorf("accepted franchise %#v", franchise)
+		}
+	}
+}
+
+func TestSubscriptionReconcilingDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		io.WriteString(w, `{"success":false,"error":"binding_reconciling","message":"reconciling","subscriptionId":42}`)
+	}))
+	defer server.Close()
+	_, err := testClient(t, server).CreateSubscription(CreateSubscriptionParams{
+		PlanID: "plan", CustomerID: "customer", CustomerEmail: "buyer@example.com", IdempotencyKey: "binding-key",
+	})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Data["subscriptionId"] != float64(42) {
+		t.Fatalf("unexpected error %#v", err)
+	}
+}
+
 func TestBaseURLs(t *testing.T) {
 	c, err := New("test-api-key")
 	if err != nil || c.baseURL != "https://api.anore.cc/api/v1" {
@@ -78,7 +195,7 @@ func TestCreatePaymentContractAndExactSignature(t *testing.T) {
 		if r.Header.Get("Anore-Signature") != "" {
 			t.Error("webhook signature header sent on API request")
 		}
-		if r.Header.Get("User-Agent") != "anore-go/1.2.0" || r.Header.Get("Content-Type") != "application/json" {
+		if r.Header.Get("User-Agent") != "anore-go/1.3.0" || r.Header.Get("Content-Type") != "application/json" {
 			t.Errorf("unexpected headers %v", r.Header)
 		}
 		var body map[string]interface{}
@@ -225,7 +342,7 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestPOSTNeverRetries(t *testing.T) {
-	for _, operation := range []string{"payment", "payout"} {
+	for _, operation := range []string{"payment", "payout", "subscription"} {
 		for _, failure := range []string{"server", "network"} {
 			t.Run(operation+"/"+failure, func(t *testing.T) {
 				calls := 0
@@ -243,8 +360,10 @@ func TestPOSTNeverRetries(t *testing.T) {
 				}
 				if operation == "payment" {
 					_, err = client.CreatePayment(CreatePaymentParams{Amount: 100, Description: "Order"})
-				} else {
+				} else if operation == "payout" {
 					_, err = client.CreatePayout(CreatePayoutParams{Amount: 5000, Method: "usdt_ton", Address: "UQ-address", ExternalID: "reference"})
+				} else {
+					_, err = client.CreateSubscription(CreateSubscriptionParams{PlanID: "plan", CustomerID: "customer", CustomerEmail: "buyer@example.com", IdempotencyKey: "binding-key"})
 				}
 				if err == nil || calls != 1 {
 					t.Fatalf("err = %v, calls = %d", err, calls)

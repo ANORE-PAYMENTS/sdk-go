@@ -36,6 +36,9 @@ func main() {
 		Description: "Подписка Pro",
 		OrderID:     "order_42",
 		ShopID:      1, // обязателен для аккаунтовых ключей (an_*)
+		UserIdentity: &anore.UserIdentity{
+			Type: anore.UserIdentityTelegramID, Value: "123456789", TelegramUsername: "@customer_name",
+		},
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -59,6 +62,37 @@ func main() {
 	fmt.Println(payout.ID, payout.Status)
 }
 ```
+
+## Identity и франшиза
+
+`UserIdentity` сейчас может быть необязательным для конкретной кассы, но скоро станет обязательным. Передавайте его уже сейчас. Telegram ID сопоставляется глобально; `email`, `username` и `external_id` — только внутри исходной кассы. `TelegramUsername` разрешён только с `telegram_id` и не участвует в matching.
+
+```go
+_, err := c.CreatePayment(anore.CreatePaymentParams{
+	Amount: 1500, Description: "Заказ филиала",
+	UserIdentity: &anore.UserIdentity{Type: anore.UserIdentityEmail, Value: "buyer@example.com"},
+	Franchise: &anore.Franchise{
+		Type: anore.FranchiseWebsite, Address: "https://branch.example.com",
+		OwnerTelegramID: "987654321", OwnerTelegramUsername: "branch_owner",
+	},
+})
+```
+
+`Franchise` обязателен при включённом franchise mode и запрещён при выключенном. Оба объекта принадлежат только ANORE, не отправляются Payso и не возвращаются через публичные responses, webhooks, логи или exports.
+
+## Рекуррентные платежи
+
+```go
+catalog, _ := c.GetSubscriptionCatalog()
+binding, err := c.CreateSubscription(anore.CreateSubscriptionParams{
+	PlanID: "plan_id", CustomerID: "customer-42", CustomerEmail: "buyer@example.com",
+	IdempotencyKey: "binding-customer-42", ShopID: 1,
+})
+_ = catalog
+_ = binding
+```
+
+Subscription POST никогда не повторяется SDK автоматически. При `503 binding_reconciling` извлеките `subscriptionId` из `APIError.Data` и используйте `GetSubscription(id)`; сохраните тот же key/body и не отправляйте новый POST.
 
 ## Проверка вебхука
 
@@ -109,12 +143,17 @@ if err != nil {
 | API | Описание |
 |-----|----------|
 | `anore.New(apiKey, ...Option)` | клиент; опции `WithSecret`, `WithBaseURL`, `WithMaxRetries`, `WithHTTPClient` |
-| `CreatePayment(CreatePaymentParams)` | создать счёт → `*Payment` |
+| `CreatePayment(CreatePaymentParams)` | создать счёт → `*Payment`; identity скоро станет обязательным, franchise зависит от режима кассы |
 | `GetPayment(id)` | статус → `*Payment` (`.Status`, `.Paid`) |
 | `ListPayments(ListPaymentsParams)` | страница платежей → `*PaymentList` |
+| `GetSubscriptionCatalog()` | доступные кассы и планы → `*SubscriptionCatalog` |
+| `CreateSubscription(CreateSubscriptionParams)` | QR привязки → `*SubscriptionBinding` |
+| `ChargeSubscription(id, idempotencyKey)` | начать списание → `*SubscriptionCharge` |
+| `GetSubscription(id)` | безопасный статус → `*SubscriptionStatus` |
 | `GetBalance(shopID)` | баланс → `*Balance` |
 | `GetPayoutFees(shopID)` | комиссии → `*PayoutFees` |
 | `GetPayoutRates(shopID)` | курсы → `*PayoutRates` |
+| `ListPayouts(ListPayoutsParams)` | история выплат → `*PayoutList` |
 | `CreatePayout(CreatePayoutParams)` | заявка → `*Payout` |
 | `GetPayout(id)` | статус выплаты → `*Payout` |
 | `VerifyWebhook(rawBody, signature, secret)` | проверка подписи → `bool` |

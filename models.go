@@ -1,5 +1,27 @@
 package anore
 
+const (
+	UserIdentityTelegramID = "telegram_id"
+	UserIdentityEmail      = "email"
+	UserIdentityUsername   = "username"
+	UserIdentityExternalID = "external_id"
+	FranchiseTelegramBot   = "telegram_bot"
+	FranchiseWebsite       = "website"
+)
+
+type UserIdentity struct {
+	Type             string `json:"type"`
+	Value            string `json:"value"`
+	TelegramUsername string `json:"telegram_username,omitempty"`
+}
+
+type Franchise struct {
+	Type                  string `json:"type"`
+	Address               string `json:"address"`
+	OwnerTelegramID       string `json:"owner_telegram_id"`
+	OwnerTelegramUsername string `json:"owner_telegram_username,omitempty"`
+}
+
 type Payment struct {
 	Success      bool    `json:"success"`
 	ID           string  `json:"id"`
@@ -118,6 +140,49 @@ type Payout struct {
 	CreatedAt        string  `json:"createdAt,omitempty"`
 	ProcessedAt      string  `json:"processedAt,omitempty"`
 	TxHash           string  `json:"txHash,omitempty"`
+}
+
+type PayoutList struct {
+	ShopID     int64    `json:"shopId"`
+	Limit      int      `json:"limit"`
+	Items      []Payout `json:"items"`
+	HasMore    bool     `json:"hasMore"`
+	NextCursor string   `json:"nextCursor"`
+}
+
+type SubscriptionCatalog struct {
+	ShopIDRequired bool                     `json:"shopIdRequired"`
+	Environment    string                   `json:"environment"`
+	Shops          []map[string]interface{} `json:"shops"`
+}
+
+type SubscriptionBinding struct {
+	SubscriptionID int64  `json:"subscriptionId"`
+	ShopID         int64  `json:"shopId"`
+	Status         string `json:"status"`
+	QRURL          string `json:"qrUrl"`
+	Environment    string `json:"environment"`
+}
+
+type SubscriptionCharge struct {
+	SubscriptionID int64  `json:"subscriptionId"`
+	ChargeID       string `json:"chargeId"`
+	PaymentID      *int64 `json:"paymentId"`
+	Status         string `json:"status"`
+}
+
+type SubscriptionStatus struct {
+	SubscriptionID int64   `json:"subscriptionId"`
+	ShopID         int64   `json:"shopId"`
+	PlanID         string  `json:"planId"`
+	PlanTitle      string  `json:"planTitle"`
+	Status         string  `json:"status"`
+	CustomerID     string  `json:"customerId"`
+	CustomerEmail  string  `json:"customerEmail"`
+	Amount         float64 `json:"amount"`
+	PaymentMethod  *string `json:"paymentMethod"`
+	Environment    string  `json:"environment"`
+	NextChargeAt   *string `json:"nextChargeAt"`
 }
 
 type WebhookEvent struct {
